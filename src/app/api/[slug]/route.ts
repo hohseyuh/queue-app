@@ -53,7 +53,15 @@ export async function POST(
   const slug = (await params).slug;
   const body = await request.json();
 
-  const updated = await updateList(slug, body);
+  // The frontend uses "queue" but the DB schema uses "items" —
+  // translate back so the merge in updateList hits the right key.
+  const { queue, ...rest } = body;
+  const patch: Record<string, unknown> = { ...rest };
+  if (queue !== undefined) {
+    patch.items = queue;
+  }
+
+  const updated = await updateList(slug, patch);
   return NextResponse.json(updated);
 }
 
