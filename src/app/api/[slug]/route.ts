@@ -1,32 +1,34 @@
 // app/api/[slug]/route.ts
 import { NextResponse } from 'next/server';
-import { getList, updateList, createList } from '../../../lib/db';
-
-// Hardcoded basic auth for demo: admin / admin
-const ADMIN_AUTH = 'Basic YWRtaW46YWRtaW4=';
+import { getList, updateList } from '../../../lib/db';
+import { validateAuth } from '../../../lib/auth';
 
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ slug: string }> }
 ) {
   const slug = (await params).slug;
+  const username = await validateAuth(request);
 
-  const authHeader = request.headers.get('authorization');
-  const isAdmin = authHeader === ADMIN_AUTH;
-
-  let list = await getList(slug);
-  if (!list) list = await createList(slug);
+  const list = await getList(slug);
+  if (!list) {
+    return NextResponse.json(
+      { error: 'Event not found', startTime: 0, isStarted: false, current: null, queue: [] },
+      { status: 404 }
+    );
+  }
 
   const now = Date.now();
   const isStarted = now >= list.startTime;
+  const isOwner = username !== null && list.owner === username;
 
   // Public users cannot see the queue before the event starts
-  if (!isAdmin && !isStarted) {
+  if (!isOwner && !isStarted) {
     return NextResponse.json({
       startTime: list.startTime,
       isStarted: false,
       current: null,
-      queue: []
+      queue: [],
     });
   }
 
@@ -37,7 +39,7 @@ export async function GET(
     isStarted,
     currentIndex: list.currentIndex,
     current: list.items[list.currentIndex] || null,
-    queue: list.items
+    queue: list.items,
   });
 }
 
@@ -45,12 +47,22 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ slug: string }> }
 ) {
-  const authHeader = request.headers.get('authorization');
-  if (authHeader !== ADMIN_AUTH) {
+  const username = await validateAuth(request);
+  if (!username) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const slug = (await params).slug;
+
+  // Verify event exists and admin owns it
+  const list = await getList(slug);
+  if (!list) {
+    return NextResponse.json({ error: 'Event not found' }, { status: 404 });
+  }
+  if (list.owner !== username) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
   const body = await request.json();
 
   // The frontend uses "queue" but the DB schema uses "items" —
@@ -61,7 +73,6 @@ export async function POST(
     patch.items = queue;
   }
 
-  const updated = await updateList(slug, patch);
+  const updated = await updateList(slug, patch as Partial<typeof list>);
   return NextResponse.json(updated);
 }
-

@@ -7,11 +7,16 @@ import { useParams } from 'next/navigation';
 export default function PublicPage() {
     const params = useParams();
     const [data, setData] = useState<any>(null);
+    const [notFound, setNotFound] = useState(false);
     const [timeLeft, setTimeLeft] = useState({ h: 0, m: 0, s: 0 });
     const [isStarted, setIsStarted] = useState(false);
 
     const fetchData = async () => {
         const res = await fetch(`/api/${params.slug}`);
+        if (res.status === 404) {
+            setNotFound(true);
+            return;
+        }
         const json = await res.json();
         setData(json);
     };
@@ -54,6 +59,15 @@ export default function PublicPage() {
     }, [data]);
 
     const pad = (n: number) => String(n).padStart(2, '0');
+
+    if (notFound) {
+        return (
+            <main className="fixed inset-0 flex flex-col items-center justify-center bg-black text-white gap-3">
+                <h1 className="text-xl font-bold">Event Not Found</h1>
+                <p className="text-sm text-zinc-500">This event does not exist.</p>
+            </main>
+        );
+    }
 
     if (!data) {
         return (
@@ -110,7 +124,7 @@ export default function PublicPage() {
                 {/* ── Top Bar ── */}
                 <header className="flex items-center justify-between px-6 py-5 sm:px-10">
                     {/* Logo: DES / INF / TEC stacked */}
-                    <div className="leading-[0.85] text-[clamp(1rem,2.5vw,1.4rem)] font-black tracking-tight select-none">
+                    <div className="leading-[0.85] text-[clamp(1rem,2.5vw,1.4rem)] font-black tracking-tight select-none text-right">
                         <span className="block">DES</span>
                         <span className="block">INF</span>
                         <span className="block">TEC</span>
@@ -182,7 +196,7 @@ export default function PublicPage() {
                             {/* Current / Now Serving */}
                             <section>
                                 <p className="text-xs font-bold uppercase tracking-[0.25em] text-white/40 mb-3">
-                                    Now serving
+                                    Time for
                                 </p>
                                 <h1 className="text-[clamp(2.5rem,8vw,6rem)] font-black leading-[0.95] tracking-tight">
                                     {data.current ? data.current.name : 'Queue Complete'}

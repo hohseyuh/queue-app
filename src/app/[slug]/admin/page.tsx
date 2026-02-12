@@ -1,10 +1,8 @@
 // app/[slug]/admin/page.tsx
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
-
-const ADMIN_AUTH_HEADER = 'Basic YWRtaW46YWRtaW4=';
+import { useEffect, useState, useRef } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 
 type AdminData = {
   slug: string;
@@ -17,65 +15,129 @@ type AdminData = {
 
 export default function AdminPage() {
   const params = useParams();
+  const router = useRouter();
   const slug = params.slug as string;
 
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [isAuthed, setIsAuthed] = useState(false);
+  // Auth state – pulled from localStorage (set by /admin dashboard)
+  const [authHeader, setAuthHeader] = useState('');
+  const [currentUser, setCurrentUser] = useState('');
+
+  // Fallback login form (if no stored auth)
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPass, setLoginPass] = useState('');
   const [loginError, setLoginError] = useState('');
 
   const [data, setData] = useState<AdminData | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  const [forbidden, setForbidden] = useState(false);
   const [startTimeInput, setStartTimeInput] = useState('');
   const [newName, setNewName] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const fetchData = async () => {
-    if (!slug) return;
+  // Track whether the user is actively editing the date input
+  // so we don't overwrite their changes with polling data
+  const isEditingTime = useRef(false);
+
+  // Try to hydrate auth from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('admin-auth');
+    if (saved) {
+      try {
+        const { username, authHeader: hdr } = JSON.parse(saved);
+        setCurrentUser(username);
+        setAuthHeader(hdr);
+      } catch {
+        localStorage.removeItem('admin-auth');
+      }
+    }
+  }, []);
+
+  const fetchData = async (hdr: string) => {
+    if (!slug || !hdr) return;
     const res = await fetch(`/api/${slug}`, {
-      headers: {
-        Authorization: ADMIN_AUTH_HEADER,
-      },
+      headers: { Authorization: hdr },
     });
+
+    if (res.status === 404) {
+      setNotFound(true);
+      return;
+    }
+    if (res.status === 401) {
+      // Stored credentials are invalid
+      setAuthHeader('');
+      setCurrentUser('');
+      localStorage.removeItem('admin-auth');
+      return;
+    }
+
     const json = await res.json();
     setData(json);
 
-    if (json.startTime) {
+    // Only update the time input if the user is NOT actively editing it
+    if (!isEditingTime.current && json.startTime) {
       const dt = new Date(json.startTime);
-      // datetime-local wants yyyy-MM-ddTHH:mm
-      setStartTimeInput(dt.toISOString().slice(0, 16));
+      const y = dt.getFullYear();
+      const mo = String(dt.getMonth() + 1).padStart(2, '0');
+      const d = String(dt.getDate()).padStart(2, '0');
+      const h = String(dt.getHours()).padStart(2, '0');
+      const mi = String(dt.getMinutes()).padStart(2, '0');
+      setStartTimeInput(`${y}-${mo}-${d}T${h}:${mi}`);
     }
   };
 
+  // Poll for data when authenticated
   useEffect(() => {
-    if (!isAuthed) return;
-    fetchData();
-    const interval = setInterval(fetchData, 5000);
+    if (!authHeader) return;
+    fetchData(authHeader);
+    const interval = setInterval(() => fetchData(authHeader), 5000);
     return () => clearInterval(interval);
-  }, [isAuthed, slug]);
+  }, [authHeader, slug]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (username === 'admin' && password === 'admin') {
-      setIsAuthed(true);
-      setLoginError('');
-    } else {
-      setLoginError('Invalid credentials');
+    setLoginError('');
+
+    // Validate credentials via the login API
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: loginUser, password: loginPass }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      setLoginError(data.error || 'Invalid credentials');
+      return;
     }
+
+    const hdr = 'Basic ' + btoa(loginUser + ':' + loginPass);
+    setAuthHeader(hdr);
+    setCurrentUser(loginUser);
+    localStorage.setItem(
+      'admin-auth',
+      JSON.stringify({ username: loginUser, authHeader: hdr })
+    );
   };
 
   const saveList = async (partial: Partial<AdminData>) => {
-    if (!slug) return;
+    if (!slug || !authHeader) return;
     setSaving(true);
     try {
-      await fetch(`/api/${slug}`, {
+      const res = await fetch(`/api/${slug}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: ADMIN_AUTH_HEADER,
+          Authorization: authHeader,
         },
         body: JSON.stringify(partial),
       });
-      await fetchData();
+
+      if (res.status === 403) {
+        setForbidden(true);
+        return;
+      }
+
+      await fetchData(authHeader);
     } finally {
       setSaving(false);
     }
@@ -85,6 +147,7 @@ export default function AdminPage() {
     if (!startTimeInput) return;
     const ts = new Date(startTimeInput).getTime();
     if (Number.isNaN(ts)) return;
+    isEditingTime.current = false;
     await saveList({ startTime: ts });
   };
 
@@ -126,73 +189,144 @@ export default function AdminPage() {
     await saveList({ currentIndex: nextIndex });
   };
 
-  if (!isAuthed) {
+  // ── Login form ──
+  if (!authHeader) {
     return (
-      <main className="min-h-screen flex items-center justify-center bg-black text-white">
+      <main className="fixed inset-0 flex items-center justify-center bg-black text-white">
         <form
           onSubmit={handleLogin}
-          className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 w-full max-w-sm space-y-6"
+          className="w-full max-w-sm space-y-6 rounded-2xl border border-zinc-800 bg-zinc-950 p-8"
         >
-          <h1 className="text-xl font-semibold tracking-tight">Admin Login</h1>
-          <div className="space-y-2">
-            <label className="block text-xs uppercase tracking-widest text-zinc-400">
-              Username
-            </label>
-            <input
-              className="w-full rounded-md bg-black border border-zinc-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-            />
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">
+              Event Admin
+            </h1>
+            <p className="mt-1 text-xs text-zinc-500">
+              Sign in to manage{' '}
+              <span className="font-mono text-zinc-300">/{slug}</span>
+            </p>
           </div>
-          <div className="space-y-2">
-            <label className="block text-xs uppercase tracking-widest text-zinc-400">
-              Password
-            </label>
-            <input
-              type="password"
-              className="w-full rounded-md bg-black border border-zinc-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
+
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                Username
+              </label>
+              <input
+                className="w-full rounded-lg border border-zinc-800 bg-black px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-600"
+                value={loginUser}
+                onChange={(e) => setLoginUser(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                Password
+              </label>
+              <input
+                type="password"
+                className="w-full rounded-lg border border-zinc-800 bg-black px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-600"
+                value={loginPass}
+                onChange={(e) => setLoginPass(e.target.value)}
+              />
+            </div>
           </div>
+
           {loginError && (
-            <p className="text-xs text-red-400">{loginError}</p>
+            <p className="text-xs font-medium text-red-400">{loginError}</p>
           )}
+
           <button
             type="submit"
-            className="w-full rounded-full bg-white text-black py-2 text-sm font-medium hover:bg-zinc-200 transition-colors"
+            className="w-full rounded-full bg-white py-2.5 text-sm font-semibold text-black transition-colors hover:bg-zinc-200"
           >
-            Sign in
+            Sign In
+          </button>
+
+          <button
+            type="button"
+            onClick={() => router.push('/admin')}
+            className="w-full text-center text-xs text-zinc-500 hover:text-white transition-colors"
+          >
+            Don&apos;t have an account? Register at /admin
           </button>
         </form>
       </main>
     );
   }
 
-  if (!data) {
+  // ── Forbidden ──
+  if (forbidden) {
     return (
-      <main className="min-h-screen flex items-center justify-center bg-black text-white">
-        <div className="text-sm font-mono">Loading admin data...</div>
+      <main className="fixed inset-0 flex flex-col items-center justify-center bg-black text-white gap-4">
+        <h1 className="text-xl font-semibold">Access Denied</h1>
+        <p className="text-sm text-zinc-500">
+          You don&apos;t own this event.
+        </p>
+        <button
+          onClick={() => router.push('/admin')}
+          className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-black hover:bg-zinc-200 transition-colors"
+        >
+          Back to dashboard
+        </button>
       </main>
     );
   }
 
+  // ── Event not found ──
+  if (notFound) {
+    return (
+      <main className="fixed inset-0 flex flex-col items-center justify-center bg-black text-white gap-4">
+        <h1 className="text-xl font-semibold">Event Not Found</h1>
+        <p className="text-sm text-zinc-500">
+          <span className="font-mono">/{slug}</span> does not exist.
+        </p>
+        <button
+          onClick={() => router.push('/admin')}
+          className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-black hover:bg-zinc-200 transition-colors"
+        >
+          Back to dashboard
+        </button>
+      </main>
+    );
+  }
+
+  // ── Loading ──
+  if (!data) {
+    return (
+      <main className="fixed inset-0 flex items-center justify-center bg-black text-white">
+        <div className="h-5 w-5 rounded-full border-2 border-white/20 border-t-white animate-spin" />
+      </main>
+    );
+  }
+
+  // ── Admin panel ──
   return (
     <main className="min-h-screen bg-black text-white p-6 font-sans max-w-3xl mx-auto space-y-10">
       <header className="flex items-center justify-between border-b border-zinc-800 pb-4">
         <div>
           <h1 className="text-2xl font-semibold">Admin Panel</h1>
           <p className="text-xs text-zinc-400 mt-1">
-            Managing event <span className="font-mono">/{slug}</span>
+            Managing event{' '}
+            <span className="font-mono">/{slug}</span>
+            {' · '}
+            <span className="text-zinc-500">{currentUser}</span>
           </p>
         </div>
-        <button
-          onClick={handleNext}
-          className="rounded-full bg-white text-black px-4 py-2 text-sm font-medium hover:bg-zinc-200 transition-colors disabled:opacity-40"
-          disabled={saving || !data.queue.length}
-        >
-          Next in queue
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => router.push('/admin')}
+            className="rounded-full border border-zinc-800 px-3 py-2 text-xs font-medium text-zinc-400 hover:border-zinc-600 hover:text-white transition-colors"
+          >
+            Dashboard
+          </button>
+          <button
+            onClick={handleNext}
+            className="rounded-full bg-white text-black px-4 py-2 text-sm font-medium hover:bg-zinc-200 transition-colors disabled:opacity-40"
+            disabled={saving || !data.queue.length}
+          >
+            Next in queue
+          </button>
+        </div>
       </header>
 
       {/* Event time */}
@@ -210,7 +344,15 @@ export default function AdminPage() {
             type="datetime-local"
             className="rounded-md bg-black border border-zinc-700 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
             value={startTimeInput}
-            onChange={(e) => setStartTimeInput(e.target.value)}
+            onFocus={() => (isEditingTime.current = true)}
+            onBlur={() => {
+              // Keep editing flag for a bit so fetchData doesn't overwrite immediately
+              setTimeout(() => (isEditingTime.current = false), 6000);
+            }}
+            onChange={(e) => {
+              isEditingTime.current = true;
+              setStartTimeInput(e.target.value);
+            }}
           />
           <button
             onClick={handleStartTimeSave}
@@ -234,6 +376,7 @@ export default function AdminPage() {
             placeholder="Add name to queue"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAddName()}
           />
           <button
             onClick={handleAddName}
