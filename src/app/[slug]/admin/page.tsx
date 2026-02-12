@@ -96,7 +96,7 @@ export default function AdminPage() {
       name,
     };
     const updatedQueue = [...(data.queue || []), newItem];
-    await saveList({ items: updatedQueue as any });
+    await saveList({ queue: updatedQueue });
     setNewName('');
   };
 
@@ -115,7 +115,7 @@ export default function AdminPage() {
 
     await saveList({
       currentIndex: newCurrentIndex,
-      items: updatedQueue as any,
+      queue: updatedQueue,
     });
   };
 
